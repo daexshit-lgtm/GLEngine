@@ -1,0 +1,23 @@
+[package]
+name = "testy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+asset-importer = "0.8.0"
+dashmap = "6.1.0"
+dear-imgui-glow = "0.15.0"
+dear-imgui-rs = "0.15.0"
+dear-imgui-winit = "0.15.0"
+fxhash = "0.2.1"
+glam = "0.33.1"
+glium = "0.36.0"
+image = "0.25.10"
+noise = "0.9.0"
+parking_lot = "0.12.5"
+rclite = "0.4.1"
+winit = "0.30.13"
+
+[profile.release]
+debug = 1 
