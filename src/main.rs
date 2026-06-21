@@ -1,10 +1,9 @@
-// Planes, FACILITIES, BluePrints, masterpiece textures, 2D, smart OOMMGG!!!
 mod modules;
 
 use std::time::Instant;
 
 use anyhow::Result;
-use fxhash::FxHashMap;
+use rustc_hash::FxHashMap;
 use glam::{IVec2, IVec3, Vec2, Vec3};
 use modules::{stage::Stage, render_3d::transform::Transform};
 use noise::{NoiseFn, Perlin};
@@ -14,7 +13,7 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
 };
 
-use crate::modules::{app::{App, HandlerCallback}, render_3d::{model::{MMaterial, SubMesh, Vertex}, texture::Texture}, stage::ModelParams};
+use crate::modules::{app::{App, HandlerCallback}, imgui::{Data2D, Window2D}, render_3d::model::{MMaterial, SubMesh, Vertex}, stage::ModelParams, texture::Texture};
 
 // ── Chunk constants ───────────────────────────────────────────────────────────
 const CHUNK_W:    i32 = 16;
@@ -53,19 +52,19 @@ impl Chunk {
     }
 
     #[inline(always)]
-    fn idx(x: i32, y: i32, z: i32) -> i32 {
-        x * CHUNK_H * CHUNK_W + y * CHUNK_W + z
+    fn idx(x: i32, y: i32, z: i32) -> usize {
+        (x * CHUNK_H * CHUNK_W + y * CHUNK_W + z) as usize
     }
 
     pub fn set(&mut self, x: i32, y: i32, z: i32, b: Block) {
         if x < CHUNK_W && y < CHUNK_H && z < CHUNK_W {
-            self.data[Self::idx(x, y, z) as usize] = b as u8;
+            self.data[Self::idx(x, y, z)] = b as u8;
         }
     }
 
     pub fn get(&self, x: i32, y: i32, z: i32) -> Block {
         if x < CHUNK_W && y < CHUNK_H && z < CHUNK_W {
-            Block::from_u8(self.data[Self::idx(x, y, z) as usize])
+            Block::from_u8(self.data[Self::idx(x, y, z)])
         } else {
             Block::Air
         }
@@ -85,13 +84,13 @@ fn biome_for(temp: f64, humidity: f64) -> Biome {
 
 // ── World generation ──────────────────────────────────────────────────────────
 pub fn generate(chunk: &mut Chunk, perlin: &Perlin) {
-    let ox = chunk.cx * CHUNK_W;
-    let oz = chunk.cz * CHUNK_W;
+    let ox = (chunk.cx * CHUNK_W) as f64;
+    let oz = (chunk.cz * CHUNK_W) as f64;
 
     for x in 0..CHUNK_W {
         for z in 0..CHUNK_W {
-            let gx   = (ox + x as i32) as f64;
-            let gz   = (oz + z as i32) as f64;
+            let gx   = ox + x as f64;
+            let gz   = oz + z as f64;
             let biome = biome_for(
                 perlin.get([gx * 0.01, gz * 0.01, 5.0]),
                 perlin.get([gx * 0.01, gz * 0.01, 12.0]),
@@ -174,6 +173,19 @@ const UVS: [[f32; 2]; 4] = [
     [0.0, 1.0],
 ];
 
+const FACE_UV_OFFSET: [(f32, f32, f32); 6] = {
+    const M: f32 = 0.33333334;
+    const Z: f32 = 0.0;
+    [
+        (M, M, M), // Front
+        (M, M, M), // Back
+        (M, M, M), // Left
+        (M, M, M), // Right
+        (M, Z, M), // Up
+        (M, Z, Z), // Down
+    ]
+};
+
 const C_LOOP: i32 = 20;
 
 fn main() {
@@ -181,6 +193,7 @@ fn main() {
     .with_init(|stage: &mut Stage, _: &mut State| {
         stage.cam.set_far(2000.0);
         stage.cam.speed = 1.0;
+        stage.add_window_2d(Window2D::new("Test".into(), vec![Data2D::Button, Data2D::Button]));
         mc(stage)
     })
     // FPS
@@ -205,7 +218,7 @@ fn fps(state: &mut State) {
     }
 }
 
-type ChunkPHash = FxHashMap<(i32, i32), Chunk>;
+type ChunkMap = FxHashMap<(i32, i32), Chunk>;
 
 /// The Game Logic
 fn mc(stage: &mut Stage) -> Result<()> {
@@ -214,7 +227,7 @@ fn mc(stage: &mut Stage) -> Result<()> {
     let chunk_materials = vec![MMaterial { tex: grass_texture }];
     
     // Generate
-    let mut chunks: ChunkPHash = FxHashMap::default();
+    let mut chunks: ChunkMap = FxHashMap::default();
     for cz in 0..C_LOOP {
         for cx in 0..C_LOOP {
             let mut chunk = Chunk::new(cx, cz);
@@ -225,7 +238,7 @@ fn mc(stage: &mut Stage) -> Result<()> {
 
     for cz in 0..C_LOOP {
         for cx in 0..C_LOOP {
-            let chunk = chunks.get(&(cx, cz)).unwrap();
+            let chunk = &chunks[&(cx, cz)];
             let mut vertices: Vec<Vertex> = Vec::with_capacity(1024);
             let mut indices: Vec<u32> = Vec::with_capacity(3072);
 
@@ -263,7 +276,7 @@ fn mc(stage: &mut Stage) -> Result<()> {
     Ok(())
 }
 
-fn block_is_visible(n: IVec3, c: IVec2, chunks: &ChunkPHash, chunk: &Chunk) -> bool {
+fn block_is_visible(n: IVec3, c: IVec2, chunks: &ChunkMap, chunk: &Chunk) -> bool {
     let upside_x = n.x < 0;
     let downside_x = n.x >= CHUNK_W;
     let upside_z = n.z < 0;
@@ -295,7 +308,7 @@ fn filter_faces(
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
     c: IVec2,
-    chunks: &ChunkPHash,
+    chunks: &ChunkMap,
     chunk: &Chunk
 ) {
     for face_idx in 0..6 {
@@ -306,23 +319,10 @@ fn filter_faces(
             let mut uv = UVS[i];
 
             // UV
-            let mul = 0.33333334; // Scale (Very specific to the texture)
-            if face_idx == 4 { 
-                // Up
-                uv[0] *= mul; 
-                uv[1] *= mul; 
-                uv[1] += mul; 
-            } else if face_idx == 5 {
-                // Down
-                uv[0] *= mul;
-                uv[1] *= mul;
-            } else {
-                // Laterals
-                uv[0] *= mul;
-                uv[0] += mul; 
-                uv[1] *= mul;
-                uv[1] += mul; 
-            }
+            let (mul, u_add, v_add) = FACE_UV_OFFSET[face_idx];
+            uv[0] = uv[0] * mul + u_add;
+            uv[1] = uv[1] * mul + v_add;
+
 
             let v_pos = pos + CUBE_VERTICES[v_idx];
             vertices.push(Vertex {

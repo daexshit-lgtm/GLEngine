@@ -5,9 +5,10 @@ use glium::{
 };
 use image::ImageBuffer;
 use rclite::Rc;
+use rustc_hash::FxHashMap;
 use core::f32;
 use std::{ops::Range, rc::Rc as StdRc};
-use crate::modules::render_3d::{aabb::Aabb, camera::Camera, texture::Texture, transform::Transform};
+use crate::modules::{render_3d::{aabb::Aabb, camera::Camera, transform::Transform}, texture::Texture};
 
 // ── Vertex ────────────────────────────────────────────────────────────────────
 #[derive(Clone, Copy)]
@@ -104,7 +105,7 @@ impl ModelCache {
         ctx: &StdRc<Context>,
         default_tex: &Rc<Texture>,
         dynamic: bool,
-        texture_cache: &mut fxhash::FxHashMap<String, rclite::Rc<Texture>>
+        texture_cache: &mut FxHashMap<String, rclite::Rc<Texture>>
     ) -> Result<Self> {
         let scene = Scene::from_file(path).map_err(|_| anyhow!("Failed to load scene: {path}"))?;
 
@@ -117,7 +118,7 @@ impl ModelCache {
                     let tex = Texture::from(path, &ctx)?;
                     texture_cache.insert(path.to_string(), Rc::new(tex));
                 }
-                m.tex = Rc::clone(texture_cache.get(path).unwrap());
+                m.tex = Rc::clone(&texture_cache[path]);
             }
             materials.push(m);
         }

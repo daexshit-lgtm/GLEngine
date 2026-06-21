@@ -5,9 +5,9 @@
 use std::{fs::read_to_string, vec, rc::Rc as StdRc};
 use glam::Vec2;
 use rclite::Rc;
-use crate::modules::{imgui::UI2D, render_3d::{aabb::Aabb, camera::Camera, model::{MCacheP, MMaterial, Model, ModelCache, SubMesh, Vertex, new_buffers}, texture::Texture, transform::Transform}};
+use crate::modules::{imgui::{UI2D, Window2D}, render_3d::{aabb::Aabb, camera::Camera, model::{MCacheP, MMaterial, Model, ModelCache, SubMesh, Vertex, new_buffers}, transform::Transform}, texture::Texture};
 use anyhow::{anyhow, Result};
-use fxhash::FxHashMap;
+use rustc_hash::FxHashMap;
 use glium::{
     Blend, BlendingFunction, Depth, DepthTest, DrawParameters, Frame, LinearBlendingFactor, Program, backend::Context
 };
@@ -36,6 +36,7 @@ impl<'a> Stage<'a> {
     /// Initializes with model/shader/texture cache ignoring DoS attacks, a camera, DrawParameters settled with DepthTest + Alpha channel
     pub fn new(ctx: StdRc<Context>, def_tex: Rc<Texture>, dimensions: &Vec2) -> Self {
         Self {
+            ui: UI2D { windows: vec![] },
             models:        vec![],
             model_cache:   FxHashMap::default(), shader_cache:  FxHashMap::default(), texture_cache: FxHashMap::default(),
             cam:           Camera::new(dimensions),
@@ -45,8 +46,8 @@ impl<'a> Stage<'a> {
                 depth: Depth { test: DepthTest::IfLess, write: true, ..Default::default() },
 
                 // Debug
-                polygon_mode: glium::PolygonMode::Line,
-                line_width: Some(2.0),
+                //polygon_mode: glium::PolygonMode::Line,
+                //line_width: Some(2.0),
 
                 // Alpha
                 blend: Blend {
@@ -63,7 +64,6 @@ impl<'a> Stage<'a> {
                 backface_culling: glium::BackfaceCullingMode::CullClockwise,
                 ..Default::default()
             },
-            ui: UI2D::default()
         }
     }
 
@@ -82,7 +82,7 @@ impl<'a> Stage<'a> {
     pub fn get_shader(&mut self, shader: &str) -> Rc<Program> {
         let shader = format!("assets/shaders/{shader}");
         if !self.shader_cache.contains_key(&shader) { self.cache_shader(&shader).unwrap() }
-        Rc::clone(self.shader_cache.get(&shader).unwrap())
+        Rc::clone(&self.shader_cache[&shader])
     }
 
     /// A raw modification, no model caching
@@ -109,7 +109,7 @@ impl<'a> Stage<'a> {
     pub fn get_model_cache(&mut self, path: &str, dynamic: bool) -> Rc<ModelCache> {
         let path   = format!("assets/models/{path}");
         if !self.model_cache.contains_key(&path) { self.cache_model(&path, dynamic).unwrap() }
-        Rc::clone(self.model_cache.get(&path).unwrap())
+        Rc::clone(&self.model_cache[&path])
     }
 
     #[allow(unused)]
@@ -137,6 +137,10 @@ impl<'a> Stage<'a> {
         cache.v_buffer = v_buffer;
         cache.i_buffer = i_buffer;
         Ok(())
+    }
+
+    pub fn add_window_2d(&mut self, window: Window2D) {
+        self.ui.windows.push(window);
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
