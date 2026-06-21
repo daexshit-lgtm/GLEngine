@@ -12,16 +12,22 @@ use winit::{
     event::{DeviceEvent, KeyEvent},
     keyboard::{KeyCode, PhysicalKey},
 };
-
-use crate::modules::{app::{App, HandlerCallback}, imgui::{Data2D, Window2D}, render_3d::model::{MMaterial, SubMesh, Vertex}, stage::ModelParams, texture::Texture};
+use crate::modules::{
+    app::{App, HandlerCallback},
+    imgui::{Data2D, Window2D},
+    render_3d::model::{MMaterial, SubMesh, Vertex},
+    stage::ModelParams,
+    texture::Texture,
+};
 
 // ── Chunk constants ───────────────────────────────────────────────────────────
-const CHUNK_W:    i32 = 16;
-const CHUNK_H:    i32 = 256;
-const CHUNK_VOL:  usize = (CHUNK_W * CHUNK_H * CHUNK_W) as usize;
-const SEA_LEVEL:  i32 = 64;
-const HEIGHT_MIN: i32 = 60;
-const HEIGHT_RANGE: f64 = 40.0;
+const CHUNK_W:     i32   = 16;
+const CHUNK_H:     i32   = 256;
+const CHUNK_VOL:   usize = (CHUNK_W * CHUNK_H * CHUNK_W) as usize;
+const SEA_LEVEL:   i32   = 64;
+const HEIGHT_MIN:  i32   = 60;
+const HEIGHT_RANGE: f64  = 40.0;
+const C_LOOP:      i32   = 20;
 
 // ── Block ─────────────────────────────────────────────────────────────────────
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -56,12 +62,14 @@ impl Chunk {
         (x * CHUNK_H * CHUNK_W + y * CHUNK_W + z) as usize
     }
 
+    #[inline]
     pub fn set(&mut self, x: i32, y: i32, z: i32, b: Block) {
         if x < CHUNK_W && y < CHUNK_H && z < CHUNK_W {
             self.data[Self::idx(x, y, z)] = b as u8;
         }
     }
 
+    #[inline]
     pub fn get(&self, x: i32, y: i32, z: i32) -> Block {
         if x < CHUNK_W && y < CHUNK_H && z < CHUNK_W {
             Block::from_u8(self.data[Self::idx(x, y, z)])
@@ -74,6 +82,7 @@ impl Chunk {
 // ── Biome ─────────────────────────────────────────────────────────────────────
 struct Biome { surface: Block, subsurface: Block }
 
+#[inline]
 fn biome_for(temp: f64, humidity: f64) -> Biome {
     if temp > 0.4 && humidity < -0.3 {
         Biome { surface: Block::Sand,  subsurface: Block::Sand }
@@ -89,8 +98,9 @@ pub fn generate(chunk: &mut Chunk, perlin: &Perlin) {
 
     for x in 0..CHUNK_W {
         for z in 0..CHUNK_W {
-            let gx   = ox + x as f64;
-            let gz   = oz + z as f64;
+            let gx = ox + x as f64;
+            let gz = oz + z as f64;
+
             let biome = biome_for(
                 perlin.get([gx * 0.01, gz * 0.01, 5.0]),
                 perlin.get([gx * 0.01, gz * 0.01, 12.0]),
@@ -100,18 +110,64 @@ pub fn generate(chunk: &mut Chunk, perlin: &Perlin) {
 
             for y in 0..CHUNK_H {
                 let block = match y {
-                    0                    => Block::Bedrock,
-                    y if y < top - 4    => Block::Stone,
-                    y if y < top - 1    => biome.subsurface,
-                    y if y == top - 1   => biome.surface,
-                    y if y < SEA_LEVEL  => Block::Water,
-                    _                   => Block::Air,
+                    0                  => Block::Bedrock,
+                    y if y < top - 4   => Block::Stone,
+                    y if y < top - 1   => biome.subsurface,
+                    y if y == top - 1  => biome.surface,
+                    y if y < SEA_LEVEL => Block::Water,
+                    _                  => Block::Air,
                 };
                 chunk.set(x, y, z, block);
             }
         }
     }
 }
+
+// ── Geometry constants ────────────────────────────────────────────────────────
+const CUBE_VERTICES: [IVec3; 8] = [
+    IVec3::new(0, 0, 1), IVec3::new(1, 0, 1), IVec3::new(1, 1, 1), IVec3::new(0, 1, 1), // Front
+    IVec3::new(0, 0, 0), IVec3::new(1, 0, 0), IVec3::new(1, 1, 0), IVec3::new(0, 1, 0), // Back
+];
+
+/// Two triangles forming a quad
+const QUAD_INDICES: [u32; 6] = [0, 1, 2, 2, 3, 0];
+
+/// 4 vertex indices per face, into CUBE_VERTICES
+const FACE_VERTICES: [[usize; 4]; 6] = [
+    [0, 1, 2, 3], // Front
+    [5, 4, 7, 6], // Back
+    [4, 0, 3, 7], // Left
+    [1, 5, 6, 2], // Right
+    [3, 2, 6, 7], // Up
+    [4, 5, 1, 0], // Down
+];
+
+/// Neighbor offsets per face (matches FACE_VERTICES order)
+const NEIGHBORS: [IVec3; 6] = [
+    IVec3::new( 0,  0,  1), // Front (+Z)
+    IVec3::new( 0,  0, -1), // Back  (-Z)
+    IVec3::new(-1,  0,  0), // Left  (-X)
+    IVec3::new( 1,  0,  0), // Right (+X)
+    IVec3::new( 0,  1,  0), // Up    (+Y)
+    IVec3::new( 0, -1,  0), // Down  (-Y)
+];
+
+const UVS: [[f32; 2]; 4] = [
+    [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+];
+
+/// Per-face UV atlas offset: (scale, u_add, v_add)
+const FACE_UV_OFFSET: [(f32, f32, f32); 6] = {
+    const M: f32 = 1.0 / 3.0;
+    [
+        (M, M, M), // Front
+        (M, M, M), // Back
+        (M, M, M), // Left
+        (M, M, M), // Right
+        (M, 0.0, M), // Up
+        (M, 0.0, 0.0), // Down
+    ]
+};
 
 // ── Input handlers ────────────────────────────────────────────────────────────
 fn on_key(stage: &mut Stage, key: KeyEvent) {
@@ -137,73 +193,6 @@ fn on_mouse(stage: &mut Stage, event: DeviceEvent) {
 // ── App state ─────────────────────────────────────────────────────────────────
 struct State { last_fps: Instant, frames: u32 }
 
-const CUBE_VERTICES: [IVec3; 8] = [
-    IVec3::new(0, 0, 1), IVec3::new(1, 0, 1), IVec3::new(1, 1, 1), IVec3::new(0, 1, 1), // Front
-    IVec3::new(0, 0, 0), IVec3::new(1, 0, 0), IVec3::new(1, 1, 0), IVec3::new(0, 1, 0), // Back
-];
-
-
-// Triangle faces
-const QUAD_INDICES: [u32; 6] = [0, 1, 2, 2, 3, 0];
-
-// Index mapping/connecting to CUBE_VERTICES; 4 vertices per face forming a rectangle
-const FACE_VERTICES: [[usize; 4]; 6] = [
-    [0, 1, 2, 3], // Front
-    [5, 4, 7, 6], // Back
-    [4, 0, 3, 7], // Left
-    [1, 5, 6, 2], // Right
-    [3, 2, 6, 7], // Up
-    [4, 5, 1, 0], // Down
-];
-
-/// Block Directions to seek Neighbors
-const NEIGHBORS: [IVec3; 6] = [
-    IVec3::new(0, 0, 1),  // Front (+Z)
-    IVec3::new(0, 0, -1), // Back (-Z)
-    IVec3::new(-1, 0, 0), // Left (-X)
-    IVec3::new(1, 0, 0),  // Right (+X)
-    IVec3::new(0, 1, 0),  // Up (+Y)
-    IVec3::new(0, -1, 0), // Down (-Y)
-];
-
-const UVS: [[f32; 2]; 4] = [
-    [0.0, 0.0],
-    [1.0, 0.0],
-    [1.0, 1.0],
-    [0.0, 1.0],
-];
-
-const FACE_UV_OFFSET: [(f32, f32, f32); 6] = {
-    const M: f32 = 0.33333334;
-    const Z: f32 = 0.0;
-    [
-        (M, M, M), // Front
-        (M, M, M), // Back
-        (M, M, M), // Left
-        (M, M, M), // Right
-        (M, Z, M), // Up
-        (M, Z, Z), // Down
-    ]
-};
-
-const C_LOOP: i32 = 20;
-
-fn main() {
-    let handlers = HandlerCallback::new()
-    .with_init(|stage: &mut Stage, _: &mut State| {
-        stage.cam.set_far(2000.0);
-        stage.cam.speed = 1.0;
-        stage.add_window_2d(Window2D::new("Test".into(), vec![Data2D::Button, Data2D::Button]));
-        mc(stage)
-    })
-    // FPS
-    .with_update(|_, state| { fps(state); Ok(()) })
-    .with_key_press(|stage, _, key| { on_key(stage, key);  Ok(()) })
-    .with_dev_event(|stage, _, dev| { on_mouse(stage, dev); Ok(()) });
-
-    App::run(Vec2::new(800.0, 600.0), "GLEngine".into(), State { last_fps: Instant::now(), frames: 0 }, handlers).unwrap();
-}
-
 fn fps(state: &mut State) {
     state.frames += 1;
     let elapsed = state.last_fps.elapsed();
@@ -218,16 +207,37 @@ fn fps(state: &mut State) {
     }
 }
 
+// ── Entry point ───────────────────────────────────────────────────────────────
+fn main() {
+    App::run(
+        Vec2::new(800.0, 600.0),
+        "GLEngine".into(),
+        State { last_fps: Instant::now(), frames: 0 },
+        HandlerCallback::new()
+            .with_init(|stage: &mut Stage, _: &mut State| {
+                stage.cam.set_far(2000.0);
+                stage.cam.speed = 1.0;
+                stage.add_window_2d(Window2D::new("Test".into(), vec![Data2D::Button, Data2D::Button]));
+                mc(stage)
+            })
+            .with_update   (|_,     state| { fps(state); Ok(()) })
+            .with_key_press(|stage, _, key| { on_key(stage, key);   Ok(()) })
+            .with_dev_event(|stage, _, dev| { on_mouse(stage, dev); Ok(()) }),
+    ).unwrap();
+}
+
+// ── Chunk map type ────────────────────────────────────────────────────────────
 type ChunkMap = FxHashMap<(i32, i32), Chunk>;
 
-/// The Game Logic
+/// World generation + mesh building
 fn mc(stage: &mut Stage) -> Result<()> {
-    let perlin = Perlin::new(42);
-    let grass_texture = Rc::new(Texture::from("TSGrassCube.jpg", &stage.ctx)?);
+    let perlin          = Perlin::new(42);
+    let grass_texture   = Rc::new(Texture::from("TSGrassCube.jpg", &stage.ctx)?);
     let chunk_materials = vec![MMaterial { tex: grass_texture }];
-    
-    // Generate
+
+    // Generate all chunks first
     let mut chunks: ChunkMap = FxHashMap::default();
+    chunks.reserve((C_LOOP * C_LOOP) as usize);
     for cz in 0..C_LOOP {
         for cx in 0..C_LOOP {
             let mut chunk = Chunk::new(cx, cz);
@@ -236,106 +246,94 @@ fn mc(stage: &mut Stage) -> Result<()> {
         }
     }
 
+    // Build meshes
     for cz in 0..C_LOOP {
         for cx in 0..C_LOOP {
-            let chunk = &chunks[&(cx, cz)];
-            let mut vertices: Vec<Vertex> = Vec::with_capacity(1024);
-            let mut indices: Vec<u32> = Vec::with_capacity(3072);
+            let mut vertices: Vec<Vertex> = Vec::with_capacity(8192);
+            let mut indices:  Vec<u32>    = Vec::with_capacity(12288);
+            let pos           = IVec2::new(cx, cz);
+            let chunk         = &chunks[&(cx, cz)];
 
-            // Filtering Visibility of Blocks
             for y in 0..CHUNK_H {
                 for z in 0..CHUNK_W {
                     for x in 0..CHUNK_W {
-                        if chunk.get(x, y, z) != Block::Air { filter_faces(
-                            IVec3::new(x, y, z),
-                            &mut vertices,
-                            &mut indices,
-                            IVec2::new(cx, cz),
-                            &chunks,
-                            &chunk
-                        ) }
+                        if chunk.get(x, y, z) != Block::Air {
+                            filter_faces(IVec3::new(x, y, z), &mut vertices, &mut indices, pos, &chunks, chunk);
+                        }
                     }
                 }
             }
 
+            if vertices.is_empty() { continue; }
+
             let sub_meshes = vec![SubMesh::new(0..indices.len(), 0)];
-            
             stage.add_mesh(
-                vertices, 
-                indices, 
-                chunk_materials.clone(), // Only this is cloned
+                vertices,
+                indices,
+                chunk_materials.clone(),
                 sub_meshes,
                 "default",
                 ModelParams {
                     transform: Transform::new((cx * CHUNK_W) as f32, -70.0, (cz * CHUNK_W) as f32),
                 },
-                false // Dynamic when breaking a block
+                false,
             )?;
         }
     }
     Ok(())
 }
 
+// ── Face culling helpers ──────────────────────────────────────────────────────
+
+/// Returns true if the block at `n` (world-local coords) is transparent/air,
+/// meaning the current face should be rendered.
 fn block_is_visible(n: IVec3, c: IVec2, chunks: &ChunkMap, chunk: &Chunk) -> bool {
-    let upside_x = n.x < 0;
-    let downside_x = n.x >= CHUNK_W;
-    let upside_z = n.z < 0;
-    let downside_z = n.z >= CHUNK_W;
-    let outside_x = upside_x || downside_x;
-    let outside_z = upside_z || downside_z;
-    if n.y < 0 { true } // Upside
-    else if outside_x || outside_z {
-        let mut neighbor = IVec2::new(c.x, c.y);
-        let mut local = IVec2::new(n.x, n.z);
+    if n.y < 0 { return true; } // Below bedrock → always draw bottom face
 
-        if upside_x { neighbor.x -= 1; local.x += CHUNK_W; }
-        else if downside_x { neighbor.x += 1; local.x -= CHUNK_W; }
+    let ox = (n.x < 0) as i32 - (n.x >= CHUNK_W) as i32; // -1, 0, or +1
+    let oz = (n.z < 0) as i32 - (n.z >= CHUNK_W) as i32;
 
-        if upside_z { neighbor.y -= 1; local.y += CHUNK_W; }
-        else if downside_z { neighbor.y += 1; local.y -= CHUNK_W; }
-
-        if let Some(neighbor_chunk) = chunks.get(&(neighbor.x, neighbor.y)) {
-            neighbor_chunk.get(local.x, n.y, local.y) == Block::Air // Chunk beside
-        } else {
-            false // End of the map
-        }
-    } else { chunk.get(n.x, n.y, n.z) == Block::Air } // Inside the chunk(Still renders)
+    if ox == 0 && oz == 0 {
+        // Same chunk
+        chunk.get(n.x, n.y, n.z) == Block::Air
+    } else {
+        // Cross-chunk lookup
+        let ncx = c.x - ox;
+        let ncz = c.y - oz;
+        let lx  = n.x + ox * CHUNK_W;
+        let lz  = n.z + oz * CHUNK_W;
+        chunks.get(&(ncx, ncz))
+            .map(|nc| nc.get(lx, n.y, lz) == Block::Air)
+            .unwrap_or(false) // Edge of the map → don't render
+    }
 }
 
-/// Filtering faces intercepting other chunks
+/// Emits vertices/indices for every visible face of the block at `pos`.
 fn filter_faces(
-    pos: IVec3,
+    pos:      IVec3,
     vertices: &mut Vec<Vertex>,
-    indices: &mut Vec<u32>,
-    c: IVec2,
-    chunks: &ChunkMap,
-    chunk: &Chunk
+    indices:  &mut Vec<u32>,
+    c:        IVec2,
+    chunks:   &ChunkMap,
+    chunk:    &Chunk,
 ) {
-    for face_idx in 0..6 {
-        if !block_is_visible(pos + NEIGHBORS[face_idx], c, chunks, chunk) { continue }
+    for face_idx in 0..6usize {
+        if !block_is_visible(pos + NEIGHBORS[face_idx], c, chunks, chunk) { continue; }
+
         let v_offset = vertices.len() as u32;
 
         for (i, &v_idx) in FACE_VERTICES[face_idx].iter().enumerate() {
-            let mut uv = UVS[i];
-
-            // UV
             let (mul, u_add, v_add) = FACE_UV_OFFSET[face_idx];
-            uv[0] = uv[0] * mul + u_add;
-            uv[1] = uv[1] * mul + v_add;
+            let raw_uv = UVS[i];
+            let uv = [raw_uv[0] * mul + u_add, raw_uv[1] * mul + v_add];
 
-
-            let v_pos = pos + CUBE_VERTICES[v_idx];
+            let vp = pos + CUBE_VERTICES[v_idx];
             vertices.push(Vertex {
-                position: [
-                    v_pos.x as f32,
-                    v_pos.y as f32,
-                    v_pos.z as f32,
-                ],
+                position: [vp.x as f32, vp.y as f32, vp.z as f32],
                 uv,
             });
         }
 
-        // Add
         for &i in &QUAD_INDICES { indices.push(v_offset + i); }
     }
 }
